@@ -245,8 +245,8 @@ check-macos-notary-profile:
 	@xcrun notarytool history --keychain-profile "$(DESKTOP_MACOS_NOTARY_PROFILE)" >/dev/null || (echo "Notary keychain profile is not usable: $(DESKTOP_MACOS_NOTARY_PROFILE)"; echo "Create it with: APPLE_ID=<email> APPLE_TEAM_ID=<team-id> make desktop-store-macos-notary-profile"; exit 1)
 
 desktop-store-macos-notary-profile:
-	@if [ -z "$(APPLE_ID)" ]; then echo "APPLE_ID is required. Example: APPLE_ID=name@example.com APPLE_TEAM_ID=UU94JSVAA9 make desktop-store-macos-notary-profile"; exit 1; fi
-	@if [ -z "$(APPLE_TEAM_ID)" ]; then echo "APPLE_TEAM_ID is required. Example: APPLE_ID=name@example.com APPLE_TEAM_ID=UU94JSVAA9 make desktop-store-macos-notary-profile"; exit 1; fi
+	@if [ -z "$(APPLE_ID)" ]; then echo "APPLE_ID is required. Example: APPLE_ID=name@example.com APPLE_TEAM_ID=ABC1234567 make desktop-store-macos-notary-profile"; exit 1; fi
+	@if [ -z "$(APPLE_TEAM_ID)" ]; then echo "APPLE_TEAM_ID is required. Example: APPLE_ID=name@example.com APPLE_TEAM_ID=ABC1234567 make desktop-store-macos-notary-profile"; exit 1; fi
 	xcrun notarytool store-credentials "$(DESKTOP_MACOS_NOTARY_PROFILE)" --apple-id "$(APPLE_ID)" --team-id "$(APPLE_TEAM_ID)"
 
 desktop-wait-macos-notary: check-macos-notary-profile
