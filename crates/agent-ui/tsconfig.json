@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "paths": {
+      "@oneagent/app/*": ["../agent-gui/src/*"],
+      "@oneagent/adapters/*": ["../agent-gui/src/agent-ui-adapters/*"],
+      "@oneagent/ui/*": ["./src/*"]
+    }
+  },
+  "include": ["src", "../agent-gui/src/vite-env.d.ts"]
+}

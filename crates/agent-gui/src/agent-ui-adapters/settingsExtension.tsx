@@ -1,0 +1,68 @@
+import { Archive, Info, Keyboard } from "@oneagent/ui/components/IconSet";
+import type { SettingsSectionDefinition, UiExtensionSlots } from "@oneagent/ui/contracts/registry";
+import { isMacOsTauri, MacOsTitleBarSpacer } from "../components/MacOsTitleBarSpacer";
+import { AboutSection } from "../pages/settings/AboutSection";
+import { BackupSyncSection } from "../pages/settings/BackupSyncSection";
+import { GlobalShortcutsSection } from "../pages/settings/GlobalShortcutsSection";
+import type { SettingsPageProps } from "../pages/settings/types";
+
+export function createSettingsExtension(props: SettingsPageProps): {
+  surface: "desktop";
+  iconClassName: string;
+  slots: UiExtensionSlots;
+  sections: SettingsSectionDefinition<void>[];
+} {
+  const { settings, setSettings, appUpdate, releaseAnnouncement, reloadSettings } = props;
+  return {
+    surface: "desktop",
+    iconClassName: "size-3.5",
+    slots: {
+      sidebarLeading: isMacOsTauri() ? (
+        <div data-tauri-drag-region className="h-38px shrink-0" />
+      ) : null,
+      mainLeading: <MacOsTitleBarSpacer />,
+    },
+    sections: [
+      {
+        id: "shortcuts",
+        groupKey: "settings.groupOther",
+        groupOrder: 50,
+        order: 10,
+        labelKey: "settings.navShortcuts",
+        icon: <Keyboard className="size-3.5" />,
+        render: () => <GlobalShortcutsSection />,
+      },
+      {
+        id: "backup",
+        groupKey: "settings.groupOther",
+        groupOrder: 50,
+        order: 15,
+        labelKey: "settings.navBackup",
+        icon: <Archive className="size-3.5" />,
+        render: () => (
+          <BackupSyncSection
+            settings={settings}
+            setSettings={setSettings}
+            reloadSettings={reloadSettings}
+          />
+        ),
+      },
+      {
+        id: "about",
+        groupKey: "settings.groupOther",
+        groupOrder: 50,
+        order: 20,
+        labelKey: "settings.navAbout",
+        icon: <Info className="size-3.5" />,
+        render: () => (
+          <AboutSection
+            settings={settings}
+            setSettings={setSettings}
+            appUpdate={appUpdate}
+            releaseAnnouncement={releaseAnnouncement}
+          />
+        ),
+      },
+    ],
+  };
+}

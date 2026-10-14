@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "paths": {
+      "@oneagent/app/*": ["./src/*"],
+      "@oneagent/adapters/*": ["./src/agent-ui-adapters/*"],
+      "@oneagent/ui/*": ["../agent-ui/src/*"]
+    }
+  },
+  "include": ["src"]
+}

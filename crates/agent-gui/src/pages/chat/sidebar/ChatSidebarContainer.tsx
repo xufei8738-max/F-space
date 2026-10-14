@@ -1,0 +1,296 @@
+// Container between the sidebar store and the GUI sidebar view. Owns every
+// rendering subscription to the store (so sidebar commits never re-render
+// ChatPage), the conversation-rename UI state, the delete flow, and the
+// error-code → i18n mapping. NOT mirrored — the web end has its own container.
+
+import {
+  buildChatHistorySidebarBaseProps,
+  buildChatHistorySidebarConversationProps,
+  buildChatHistorySidebarWorkspaceProps,
+  ChatHistorySidebar,
+  type ChatHistorySidebarContainerSource,
+} from "@oneagent/ui/components/chat/ChatHistorySidebar";
+import { useLocale } from "@oneagent/ui/i18n/index";
+import type { SidebarBatchDeleteOptions } from "@oneagent/ui/lib/sidebar/batchDelete";
+import { deleteSidebarConversations } from "@oneagent/ui/lib/sidebar/batchDelete";
+import type { SidebarStore } from "@oneagent/ui/lib/sidebar/store";
+import type { SidebarConversation } from "@oneagent/ui/lib/sidebar/types";
+import { useSidebarContainerState } from "@oneagent/ui/lib/sidebar/useSidebarContainerState";
+import { sortWorkspaceProjectsByActivity } from "@oneagent/ui/lib/workspaceProjects";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  DesktopSidebarBrand,
+  DesktopSidebarTitleBar,
+  DesktopSidebarUpdate,
+  hideDesktopSidebarCloseButton,
+} from "../../../agent-ui-adapters/sidebarChrome";
+import type { AppUpdateController } from "../../../lib/appUpdates";
+import { normalizeConversationTitle } from "../../../lib/chat/page/chatPageHelpers";
+import type { WorkspaceProject, WorkspaceProjectGroup } from "../../../lib/settings";
+import type { ConversationApprovalStore } from "../conversations/conversationApprovalStore";
+import type { ConversationQuestionStore } from "../conversations/conversationQuestionStore";
+import {
+  moveConversationsToWorkspace,
+  moveConversationToWorkspace,
+} from "./conversationWorkspaceMove";
+
+type ChatSidebarContainerProps = ChatHistorySidebarContainerSource & {
+  store: SidebarStore;
+  approvalStore: ConversationApprovalStore;
+  questionStore: ConversationQuestionStore;
+  workspaceProjectGroups: WorkspaceProjectGroup[];
+  onCreateWorkspaceGroup: (name: string) => void;
+  onRenameWorkspaceGroup: (groupId: string, name: string) => void;
+  onDeleteWorkspaceGroup: (groupId: string) => void;
+  onMoveProjectToGroup: (projectPath: string, groupId: string | null) => void;
+  onToggleWorkspaceGroupCollapsed: (groupId: string) => void;
+  onBrowseProjectInSystemFileManager: (project: WorkspaceProject) => void;
+  // Invoked after the store confirmed a deletion; ChatPage cleans artifacts
+  // and replaces the current conversation when needed.
+  onConversationDeleted: (id: string) => void;
+  onConversationCwdChanged: (id: string, cwd: string) => void;
+  onConversationWorkbenchDragIntent?: (
+    item: SidebarConversation,
+    event: {
+      pointerId: number;
+      clientX: number;
+      clientY: number;
+      currentTarget?: EventTarget | null;
+    },
+  ) => void;
+  onConversationOpenInWorkbenchSplit?: (item: SidebarConversation) => void;
+  onProjectWorkbenchDragIntent?: (
+    project: WorkspaceProject,
+    event: {
+      pointerId: number;
+      clientX: number;
+      clientY: number;
+      currentTarget?: EventTarget | null;
+    },
+  ) => void;
+  appUpdate?: AppUpdateController;
+};
+
+/** Both the approval and the ask-question registries expose this shape, so one
+ *  hook covers "which visible conversations are blocked on the user". */
+type PendingConversationStore = {
+  getSnapshot: (conversationId: string) => readonly unknown[];
+  subscribe: (conversationId: string, listener: () => void) => () => void;
+};
+
+function useBlockedConversationIds(
+  items: readonly SidebarConversation[],
+  pendingStore: PendingConversationStore,
+): ReadonlySet<string> {
+  const conversationIds = useMemo(() => items.map((item) => item.id), [items]);
+  const readSnapshot = useCallback(() => {
+    const result = new Set<string>();
+    for (const conversationId of conversationIds) {
+      if (pendingStore.getSnapshot(conversationId).length > 0) result.add(conversationId);
+    }
+    return result;
+  }, [pendingStore, conversationIds]);
+  const [blockedConversationIds, setBlockedConversationIds] =
+    useState<ReadonlySet<string>>(readSnapshot);
+
+  useEffect(() => {
+    const notify = () => setBlockedConversationIds(readSnapshot());
+    const unsubscribers = conversationIds.map((conversationId) =>
+      pendingStore.subscribe(conversationId, notify),
+    );
+    // Close the small render→subscribe race by re-reading once subscriptions exist.
+    notify();
+    return () => {
+      for (const unsubscribe of unsubscribers) unsubscribe();
+    };
+  }, [pendingStore, conversationIds, readSnapshot]);
+
+  return blockedConversationIds;
+}
+
+export function ChatSidebarContainer(props: ChatSidebarContainerProps) {
+  const {
+    store,
+    approvalStore,
+    questionStore,
+    projects,
+    onConversationDeleted,
+    onConversationCwdChanged,
+  } = props;
+  const { t } = useLocale();
+
+  const {
+    items,
+    listState,
+    scopeKey,
+    runningConversationIds,
+    mutations: busyConversationIds,
+    mutationErrors,
+    projectActivityInputs,
+    workspaceHistory,
+  } = useSidebarContainerState(store, props.showProjects);
+
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const approvalConversationIds = useBlockedConversationIds(items, approvalStore);
+  const questionConversationIds = useBlockedConversationIds(items, questionStore);
+
+  const sortedProjects = useMemo(
+    () =>
+      sortWorkspaceProjectsByActivity(projects, {
+        projectOrder: props.projectOrder,
+        projectActivityUpdatedAts: projectActivityInputs.workdirActivity,
+        runningProjectPathKeys: projectActivityInputs.runningWorkdirPathKeys,
+      }),
+    [
+      projectActivityInputs.runningWorkdirPathKeys,
+      projectActivityInputs.workdirActivity,
+      projects,
+      props.projectOrder,
+    ],
+  );
+
+  const handleStartRenaming = useCallback(
+    (item: SidebarConversation) => {
+      store.clearMutationError(item.id);
+      setRenamingId(item.id);
+      setRenameDraft(item.title);
+    },
+    [store],
+  );
+
+  const handleCommitRename = () => {
+    const id = renamingId;
+    setRenamingId(null);
+    setRenameDraft("");
+    if (!id) {
+      return;
+    }
+    const title = normalizeConversationTitle(renameDraft);
+    const current = store.peek(id);
+    if (!title || !current || title === current.title) {
+      return;
+    }
+    void store.rename(id, title);
+  };
+
+  const handleCancelRename = useCallback(() => {
+    setRenamingId(null);
+    setRenameDraft("");
+  }, []);
+
+  const handleSetPinned = useCallback(
+    (id: string, isPinned: boolean) => {
+      store.clearMutationError(id);
+      void store.setPinned(id, isPinned);
+    },
+    [store],
+  );
+
+  const handleMoveToWorkspace = useCallback(
+    (id: string, cwd: string) => {
+      void moveConversationToWorkspace(store, id, cwd, onConversationCwdChanged);
+    },
+    [onConversationCwdChanged, store],
+  );
+
+  const handleMoveConversationsToWorkspace = useCallback(
+    async (ids: readonly string[], cwd: string) => {
+      return moveConversationsToWorkspace(store, ids, cwd, onConversationCwdChanged);
+    },
+    [onConversationCwdChanged, store],
+  );
+
+  const handleDeleteConversation = useCallback(
+    (id: string) => {
+      store.clearMutationError(id);
+      void store.remove(id).then((removed) => {
+        if (removed) {
+          onConversationDeleted(id);
+        }
+      });
+    },
+    [onConversationDeleted, store],
+  );
+
+  const handleDeleteConversations = useCallback(
+    async (ids: readonly string[], options?: SidebarBatchDeleteOptions) => {
+      const result = await deleteSidebarConversations(
+        ids,
+        async (id) => {
+          store.clearMutationError(id);
+          return store.remove(id);
+        },
+        options,
+      );
+      for (const id of result.deletedIds) {
+        onConversationDeleted(id);
+      }
+      return result;
+    },
+    [onConversationDeleted, store],
+  );
+
+  const handleLoadMore = useCallback(() => {
+    void store.loadMore();
+  }, [store]);
+
+  // A per-row mutation error is more actionable (and dismissable) than the
+  // list error, so it takes the banner slot when both exist.
+  const firstMutationError = mutationErrors.entries().next();
+  let errorMessage: string | null = null;
+  let actionErrorMessage: string | null = null;
+  let handleDismissActionError: (() => void) | undefined;
+  if (!firstMutationError.done) {
+    const [errorConversationId, errorCode] = firstMutationError.value;
+    actionErrorMessage = t(`chat.history.${errorCode}`);
+    handleDismissActionError = () => store.clearMutationError(errorConversationId);
+  } else if (listState.error) {
+    errorMessage = listState.errorDetail?.trim() || t(`chat.history.${listState.error}`);
+  }
+
+  return (
+    <ChatHistorySidebar
+      workspaceHistory={workspaceHistory}
+      onLoadWorkspaceHistory={store.loadWorkspaceHistory}
+      {...buildChatHistorySidebarBaseProps(props, {
+        items,
+        runningConversationIds,
+        busyConversationIds,
+        listState,
+        scopeKey,
+        errorMessage,
+        actionErrorMessage,
+        onDismissActionError: handleDismissActionError,
+        renamingId,
+        renameDraft,
+      })}
+      approvalConversationIds={approvalConversationIds}
+      questionConversationIds={questionConversationIds}
+      {...buildChatHistorySidebarWorkspaceProps(
+        props,
+        sortedProjects,
+        projectActivityInputs.runningWorkdirPathKeys,
+      )}
+      {...buildChatHistorySidebarConversationProps(props, {
+        onStartRenaming: handleStartRenaming,
+        onRenameDraftChange: setRenameDraft,
+        onCommitRename: handleCommitRename,
+        onCancelRename: handleCancelRename,
+        onSetPinned: handleSetPinned,
+        onMoveToWorkspace: handleMoveToWorkspace,
+        onMoveConversationsToWorkspace: handleMoveConversationsToWorkspace,
+        onDeleteConversation: handleDeleteConversation,
+        onDeleteConversations: handleDeleteConversations,
+        onLoadMore: handleLoadMore,
+      })}
+      onConversationWorkbenchDragIntent={props.onConversationWorkbenchDragIntent}
+      onConversationOpenInWorkbenchSplit={props.onConversationOpenInWorkbenchSplit}
+      onProjectWorkbenchDragIntent={props.onProjectWorkbenchDragIntent}
+      headerTop={<DesktopSidebarTitleBar />}
+      brand={<DesktopSidebarBrand />}
+      hideCloseButton={hideDesktopSidebarCloseButton()}
+      footerTrailing={<DesktopSidebarUpdate appUpdate={props.appUpdate} />}
+    />
+  );
+}
